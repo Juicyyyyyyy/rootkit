@@ -1,4 +1,4 @@
-obj-m += epirootkit.o
+obj-m += waystar_rootkit.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
