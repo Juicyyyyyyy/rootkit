@@ -161,6 +161,7 @@ static int connection_worker(void *data)
     struct sockaddr_in addr;
     int               ret;
     char             *cmd;
+    int authenticated = 0; 
 
     /* allocate cmd buffer here to avoid mixed declarations */
     cmd = kmalloc(CMD_MAX_LEN + 1, GFP_KERNEL);
