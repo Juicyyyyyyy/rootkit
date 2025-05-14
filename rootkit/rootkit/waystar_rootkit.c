@@ -14,7 +14,7 @@
 #include <linux/namei.h>      // for kern_path()
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Corentin Dupaigne");
+MODULE_AUTHOR("Jules Aubert <jules1.aubert@epita.fr>");
 MODULE_DESCRIPTION("EpiRootkit: pedagogical rootkit base");
 MODULE_VERSION("0.1");
 
