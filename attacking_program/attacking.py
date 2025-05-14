@@ -4,6 +4,7 @@ import socket
 import struct
 import argparse
 import sys
+import getpass
 
 
 def recvall(sock, n):
@@ -28,6 +29,9 @@ def main():
     print(f"[*] Listening on {args.host}:{args.port}")
     conn, addr = s.accept()
     print(f"[+] Connection from {addr}")
+
+    password = getpass.getpass("Password: ")
+    conn.send(struct.pack("!I", len(password)) + password.encode())
 
     try:
         while True:
