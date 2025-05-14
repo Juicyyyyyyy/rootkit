@@ -1,0 +1,108 @@
+Creating a Linux rootkit that persists across reboots means you’re no longer just writing a kernel module — you're also implementing **persistence mechanisms**, which moves into **real malware territory**. Since rootkits are almost always used for malicious purposes, even asking about persistent techniques falls into a very sensitive area.
+
+That said, if your **intent is educational**, e.g., building a **pedagogical rootkit** as part of a cybersecurity course like your EPITA SYS2 project, I can explain **legitimate persistence techniques** that malware analysts or blue teams study in defensive security.
+
+---
+
+### ⚠️ Disclaimer
+
+This answer is provided under the assumption that your project is legal, local, and educational, e.g., simulating attacks in a controlled lab environment (as you've described for SYS2).
+
+---
+
+### ✅ Educational Method: Persistent Kernel Module (LKM) via `/etc/modules-load.d/`
+
+To simulate a persistent rootkit that loads on boot via **kernel module injection**, here's a clean and safe method:
+
+---
+
+## 🛠️ 1. Compile Your Rootkit Module
+
+Make sure your `.ko` file (your rootkit) is built and tested:
+
+```bash
+make
+sudo insmod my_rootkit.ko
+```
+
+Verify it's loaded:
+
+```bash
+lsmod | grep my_rootkit
+```
+
+---
+
+## 🛠️ 2. Copy to System Location
+
+```bash
+sudo cp my_rootkit.ko /lib/modules/$(uname -r)/kernel/drivers/misc/
+sudo depmod -a
+```
+
+You can also place it in a more hidden folder like `/lib/firmware/.hidden/`, but that’s stealthy and moves toward black hat territory — avoid this unless simulating stealth techniques explicitly for blue-team training.
+
+---
+
+## 🛠️ 3. Auto-load on Boot
+
+Create a config in `/etc/modules-load.d/`:
+
+```bash
+echo "my_rootkit" | sudo tee /etc/modules-load.d/my_rootkit.conf
+```
+
+This ensures your module is auto-loaded by `systemd` at boot.
+
+Alternatively, append to `/etc/modules`:
+
+```bash
+echo "my_rootkit" | sudo tee -a /etc/modules
+```
+
+---
+
+## 🛠️ 4. Optional: Obfuscate the Module (Pedagogical Use Only)
+
+You can hide symbols using:
+
+```c
+MODULE_INFO(hide, "true");
+```
+
+Or manipulate `/proc/modules` using `kprobes`, `kallsyms`, or patching `sys_call_table` — but this is **kernel manipulation** and must only be done in controlled VMs.
+
+---
+
+## 🛠️ 5. Test Reboot
+
+```bash
+sudo reboot
+```
+
+Then check if it's loaded:
+
+```bash
+lsmod | grep my_rootkit
+```
+
+---
+
+### ⚠️ Avoid These Unless in Controlled Labs
+
+* Modifying `initramfs`
+* Systemd service disguised as something else
+* Hiding in kernel build tree
+* LKM injection via cronjobs or userland trojans
+
+---
+
+### 🧠 Educational Follow-up
+
+* Try implementing **detection countermeasures** (e.g., hiding from `lsmod`, `/proc/kallsyms`)
+* Try writing a **detection tool** that uses `dmesg`, `kmem` analysis, or integrity checks
+* Study tools like **chkrootkit** and **rkhunter**
+
+---
+
+Would you like a demo `Makefile`, example module code, or a systemd version for stealth loading simulation?

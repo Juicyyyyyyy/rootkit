@@ -1,0 +1,2 @@
+- [] Setup la VM sur qemu et trouver une version linux/distro adaptee
+- [] Makefile qui cree epirookit kernel module et qui clean le repo
