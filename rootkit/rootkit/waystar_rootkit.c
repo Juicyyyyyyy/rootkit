@@ -246,13 +246,16 @@ static int connection_worker(void *data)
         }
 
         // Get client address
-        ret = kernel_getpeername(accept_sock, (struct sockaddr *)&addr);
-        if (ret < 0)
         {
-            pr_err("[Waystar] getpeername failed: %d\n", ret);
-            sock_release(accept_sock);
-            sock_release(listen_sock);
-            goto retry;
+            int addrlen = sizeof(addr);
+            ret = kernel_getpeername(accept_sock, (struct sockaddr *)&addr, &addrlen);
+            if (ret < 0)
+            {
+                pr_err("[Waystar] getpeername failed: %d\n", ret);
+                sock_release(accept_sock);
+                sock_release(listen_sock);
+                goto retry;
+            }
         }
 
         // Store the first connecting IP if not already detected
