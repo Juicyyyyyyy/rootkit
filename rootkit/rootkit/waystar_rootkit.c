@@ -294,6 +294,12 @@ static int connection_worker(void *data)
                 goto disconnect;
             }
             pr_info("[Waystar] Authenticated successfully.\n");
+
+            // Send a success response (1 byte) to indicate successful authentication
+            {
+                char success_response = 1;
+                sock_send_all(conn_sock, &success_response, 1);
+            }
         }
 
         while (!kthread_should_stop())
