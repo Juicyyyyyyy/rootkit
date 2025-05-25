@@ -298,7 +298,12 @@ static int connection_worker(void *data)
             // Send a success response (1 byte) to indicate successful authentication
             {
                 char success_response = 1;
-                sock_send_all(conn_sock, &success_response, 1);
+                ret = sock_send_all(conn_sock, &success_response, 1);
+                if (ret < 0) {
+                    pr_err("[Waystar] Failed to send authentication response: %d\n", ret);
+                    goto disconnect;
+                }
+                pr_info("[Waystar] Authentication response sent successfully.\n");
             }
         }
 
